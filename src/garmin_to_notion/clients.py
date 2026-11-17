@@ -26,6 +26,27 @@ class Clients:
     notion: NotionClient
 
 
+def _make_notion_client(token: str):
+    """Notion client with built-in retry/backoff for API rate limits (3 req/s)."""
+    client = NotionClient(auth=token)
+    original_request = client.request
+
+    def request_with_retry(*args, **kwargs):
+        for attempt in range(10):
+            try:
+                return original_request(*args, **kwargs)
+            except Exception as e:
+                msg = str(e).lower()
+                if ("rate limited" in msg or "429" in msg or "rate_limit" in msg) and attempt < 9:
+                    time.sleep(min(1.0 * (attempt + 1), 5.0))
+                    continue
+                raise
+        raise RuntimeError("Notion request failed after retries")
+
+    client.request = request_with_retry
+    return client
+
+
 def _load_tokens_from_env() -> dict | None:
     """Load OAuth tokens from GARMIN_TOKENS env var (base64 JSON bundle)."""
     raw = os.getenv("GARMIN_TOKENS", "").strip()
@@ -140,7 +161,7 @@ def init_clients(settings: Settings) -> Clients:
             garmin = _init_garmin_with_tokens(tokens)
             logger.info("Garmin auth successful (GARMIN_TOKENS secret, user: %s)", garmin.display_name)
             _save_tokens_to_disk(tokens)
-            return Clients(garmin=garmin, notion=NotionClient(auth=settings.notion_token))
+            return Clients(garmin=garmin, notion=_make_notion_client(settings.notion_token))
         except Exception as e:
             logger.warning("GARMIN_TOKENS failed: %s", e)
 
@@ -151,7 +172,7 @@ def init_clients(settings: Settings) -> Clients:
             garmin = _init_garmin_with_tokens(tokens)
             logger.info("Garmin auth successful (cached tokens, user: %s)", garmin.display_name)
             _save_tokens_to_disk(tokens)
-            return Clients(garmin=garmin, notion=NotionClient(auth=settings.notion_token))
+            return Clients(garmin=garmin, notion=_make_notion_client(settings.notion_token))
         except Exception as e:
             logger.warning("Cached tokens failed: %s", e)
 
@@ -168,7 +189,7 @@ def init_clients(settings: Settings) -> Clients:
                 garmin.garth.dump(str(TOKENSTORE_DIR))
             except Exception:
                 pass
-            return Clients(garmin=garmin, notion=NotionClient(auth=settings.notion_token))
+            return Clients(garmin=garmin, notion=_make_notion_client(settings.notion_token))
         except Exception as e:
             if attempt < max_retries and "429" in str(e):
                 wait = 30 * attempt
@@ -182,4 +203,4 @@ def init_clients(settings: Settings) -> Clients:
 
 def init_notion_only(settings: Settings) -> NotionClient:
     """Initialize only the Notion client (for tools that don't need Garmin)."""
-    return NotionClient(auth=settings.notion_token)
+    return _make_notion_client(settings.notion_token)
