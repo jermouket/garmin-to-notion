@@ -194,6 +194,33 @@ def _activity_needs_update(
         return True
 
 
+def _ensure_select_options(
+    notion: NotionClient, database_id: str, prop_name: str, values: set[str]
+) -> None:
+    """Add any missing select options to a database property.
+
+    Newer Notion API rejects select values that are not defined in the schema,
+    so we proactively register every value we are about to write.
+    """
+    try:
+        db = notion.databases.retrieve(database_id=database_id)
+        prop = db.get("properties", {}).get(prop_name, {})
+        current = prop.get("select", {}).get("options", [])
+        existing = {o["name"] for o in current}
+        missing = [v for v in sorted(values) if v and v not in existing]
+        if not missing:
+            return
+        options = [{"name": o["name"], **({"color": o["color"]} if o.get("color") else {})} for o in current]
+        options += [{"name": m} for m in missing]
+        notion.databases.update(
+            database_id=database_id,
+            properties={prop_name: {"select": {"options": options}}},
+        )
+        logger.info("Added %d missing options to %s: %s", len(missing), prop_name, ", ".join(missing))
+    except Exception as e:
+        logger.warning("Could not update options for %s: %s", prop_name, e)
+
+
 def sync_activities(
     garmin: GarminClient,
     notion: NotionClient,
@@ -202,6 +229,17 @@ def sync_activities(
     """Sync all Garmin activities to the Notion Activities database."""
     activities = garmin.get_activities(0, settings.fetch_limit)
     logger.info("Fetched %d activities from Garmin", len(activities))
+
+    type_values, subtype_values = set(), set()
+    for _a in activities:
+        _t, _st = format_activity_type(
+            _a.get("activityType", {}).get("typeKey", "Unknown"),
+            _a.get("activityName", ""),
+        )
+        type_values.add(_t)
+        subtype_values.add(_st)
+    _ensure_select_options(notion, settings.activities_db_id, "Type", type_values)
+    _ensure_select_options(notion, settings.activities_db_id, "SubType", subtype_values)
 
     created, updated, skipped = 0, 0, 0
 
