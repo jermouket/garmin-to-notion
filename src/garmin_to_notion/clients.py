@@ -90,6 +90,16 @@ def _init_garmin_with_tokens(tokens: dict) -> GarminClient:
         **{k: v for k, v in oauth2.items() if k in garth.sso.OAuth2Token.__dataclass_fields__}
     )
 
+    # Refresh OAuth2 if expired (OAuth1 token is long-lived, refresh avoids SSO rate limits)
+    try:
+        exp = getattr(garmin.garth.oauth2_token, "expires_at", 0) or 0
+        if exp and exp <= time.time() + 300:
+            garmin.garth.refresh_oauth2()
+            _save_tokens_to_disk({"oauth1": tokens["oauth1"], "oauth2": json.loads(json.dumps(garmin.garth.oauth2_token.__dict__))})
+            logger.info("OAuth2 token refreshed from OAuth1")
+    except Exception as e:
+        logger.warning("OAuth2 refresh failed: %s", e)
+
     # Load profile (socialProfile works with OAuth2 bearer tokens)
     try:
         profile = garmin.garth.connectapi("/userprofile-service/socialProfile")
